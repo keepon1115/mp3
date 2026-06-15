@@ -139,8 +139,72 @@ input[type=range]{flex:1;accent-color:#6c6cff;height:4px}
 // FFmpeg 0.12 系は内部で Web Worker を生成する。CDN から直接 Worker を
 // 構築するとクロスオリジン（file:// では origin 'null'）で失敗するため、
 // Worker・コア・wasm をすべて Blob URL 化して同一オリジン扱いにする。
-const FF_BASE = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.15/dist/umd';
-const CORE_BASE = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+//
+// 1つの CDN が落ちている／到達できない環境でも動くよう、unpkg →
+// jsDelivr の順で自動フォールバックする。
+const CDNS = [
+  {
+    ff:   'https://unpkg.com/@ffmpeg/ffmpeg@0.12.15/dist/umd',
+    util: 'https://unpkg.com/@ffmpeg/util@0.12.2/dist/umd',
+    core: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd',
+  },
+  {
+    ff:   'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/umd',
+    util: 'https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.2/dist/umd',
+    core: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd',
+  },
+];
+const WORKER_CHUNK = '814.ffmpeg.js'; // @ffmpeg/ffmpeg@0.12.15 のワーカーチャンク名
+
+// <script> を動的に読み込む。指定 URL が失敗したら reject する。
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    // 既に同じ src を読み込んでいれば再利用
+    if ([...document.scripts].some(s => s.src === src)) { resolve(); return; }
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('読み込み失敗: ' + src));
+    document.head.appendChild(s);
+  });
+}
+
+// FFmpegWASM / FFmpegUtil のグローバルが揃うまで CDN を順に試す。
+// 成功した CDN 定義を返す（core の取得先に使う）。
+async function ensureLibs() {
+  if (window.FFmpegWASM && window.FFmpegUtil) {
+    return window.__ffCdn || CDNS[0];
+  }
+  let lastErr = null;
+  for (const cdn of CDNS) {
+    try {
+      if (!window.FFmpegWASM) await loadScript(`${cdn.ff}/ffmpeg.js`);
+      if (!window.FFmpegUtil) await loadScript(`${cdn.util}/index.js`);
+      if (window.FFmpegWASM && window.FFmpegUtil) {
+        window.__ffCdn = cdn;
+        return cdn;
+      }
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw new Error('FFmpegライブラリの読み込みに失敗しました。ネットワーク接続またはCDNのブロックを確認してください。'
+    + (lastErr ? '（' + lastErr.message + '）' : ''));
+}
+
+// 複数の候補 URL を順に toBlobURL でフェッチし、最初に成功したものを返す。
+async function blobURLWithFallback(toBlobURL, urls, mime) {
+  let lastErr = null;
+  for (const url of urls) {
+    try {
+      return await toBlobURL(url, mime);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw new Error('コンポーネントの取得に失敗しました' + (lastErr ? '（' + lastErr.message + '）' : ''));
+}
+
 let ffmpeg = null, ws = null, audioBlob = null, origName = 'audio';
 let trimStart = null, trimEnd = null, zoomLevel = 50, vol = 100, fmt = 'mp3';
 let isDragging = false, dragStartX = 0, dragStartTime = 0, wsDuration = 0;
@@ -167,6 +231,9 @@ async function processFile(file) {
 
   try {
     if (!ffmpeg) {
+      // まずライブラリ本体（UMD）が揃っているか確認し、無ければ CDN を
+      // 順に試して読み込む。成功した CDN を core の取得先に使う。
+      const cdn = await ensureLibs();
       const {FFmpeg: FF} = window.FFmpegWASM || {};
       const {toBlobURL} = window.FFmpegUtil || {};
       if (!FF || !toBlobURL) {
@@ -177,10 +244,13 @@ async function processFile(file) {
       setProgress(3, 'FFmpegコンポーネントを取得中…');
       // CDN から取得したスクリプト／wasm を Blob URL 化してから読み込む。
       // これにより file:// や別オリジンでも Worker を構築できる。
+      // 各コンポーネントは成功した CDN を優先しつつ、全 CDN へフォールバックする。
+      const ffBases   = CDNS.map(c => c.ff);
+      const coreBases = [cdn.core, ...CDNS.map(c => c.core)];
       const [classWorkerURL, coreURL, wasmURL] = await Promise.all([
-        toBlobURL(`${FF_BASE}/814.ffmpeg.js`, 'text/javascript'),
-        toBlobURL(`${CORE_BASE}/ffmpeg-core.js`, 'text/javascript'),
-        toBlobURL(`${CORE_BASE}/ffmpeg-core.wasm`, 'application/wasm'),
+        blobURLWithFallback(toBlobURL, [cdn.ff, ...ffBases].map(b => `${b}/${WORKER_CHUNK}`), 'text/javascript'),
+        blobURLWithFallback(toBlobURL, coreBases.map(b => `${b}/ffmpeg-core.js`), 'text/javascript'),
+        blobURLWithFallback(toBlobURL, coreBases.map(b => `${b}/ffmpeg-core.wasm`), 'application/wasm'),
       ]);
       setProgress(6, 'FFmpegを初期化中…');
       await ffmpeg.load({classWorkerURL, coreURL, wasmURL});
