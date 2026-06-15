@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MP4 → MP3 Studio</title>
+<script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.15/dist/umd/ffmpeg.js"></script>
+<script src="https://unpkg.com/@ffmpeg/util@0.12.2/dist/umd/index.js"></script>
+<script src="https://unpkg.com/wavesurfer.js@7/dist/wavesurfer.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f0f13;color:#e8e8f0;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:2rem 1rem}
+h1{font-size:1.4rem;font-weight:600;letter-spacing:.02em;margin-bottom:.3rem;color:#f0f0fa}
+.sub{font-size:.8rem;color:#666;margin-bottom:2rem}
+.card{background:#18181f;border:1px solid #2a2a38;border-radius:16px;padding:1.5rem;width:100%;max-width:720px;margin-bottom:1rem}
+.drop-zone{border:2px dashed #3a3a5c;border-radius:12px;padding:3rem 2rem;text-align:center;cursor:pointer;transition:all .2s;position:relative}
+.drop-zone:hover,.drop-zone.drag{border-color:#6c6cff;background:rgba(108,108,255,.05)}
+.drop-zone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+.drop-icon{font-size:2.5rem;margin-bottom:.75rem;display:block}
+.drop-title{font-size:1rem;font-weight:500;color:#c0c0e0;margin-bottom:.3rem}
+.drop-hint{font-size:.75rem;color:#555}
+.progress-wrap{display:none;margin-top:1rem}
+.progress-bar{height:4px;background:#2a2a38;border-radius:2px;overflow:hidden}
+.progress-fill{height:100%;background:linear-gradient(90deg,#6c6cff,#a56cff);width:0%;transition:width .3s}
+.status{font-size:.75rem;color:#888;margin-top:.5rem;text-align:center}
+#waveform-card{display:none}
+.waveform-wrap{background:#0d0d12;border-radius:10px;padding:1rem;margin-bottom:1rem;cursor:crosshair}
+#waveform{border-radius:6px}
+.timeline-row{display:flex;align-items:center;gap:.75rem;margin-bottom:1rem;flex-wrap:wrap}
+.time-badge{font-size:.75rem;font-family:monospace;background:#0d0d12;border:1px solid #2a2a38;border-radius:6px;padding:.3rem .6rem;color:#a0a0c0;min-width:80px;text-align:center}
+.trim-label{font-size:.75rem;color:#666}
+.controls{display:flex;gap:.75rem;flex-wrap:wrap}
+.btn{display:flex;align-items:center;gap:.5rem;padding:.55rem 1.1rem;border-radius:8px;border:1px solid #3a3a5c;background:transparent;color:#c0c0e0;font-size:.85rem;cursor:pointer;transition:all .15s;font-family:inherit}
+.btn:hover{background:#2a2a38;border-color:#5a5a8c;color:#f0f0ff}
+.btn.primary{background:#6c6cff;border-color:#6c6cff;color:#fff}
+.btn.primary:hover{background:#7c7cff}
+.btn.danger{border-color:#ff4466;color:#ff4466}
+.btn.danger:hover{background:rgba(255,68,102,.1)}
+.btn svg{width:15px;height:15px;flex-shrink:0}
+.region-info{background:#1c1c28;border:1px solid #2a2a38;border-radius:8px;padding:.75rem 1rem;font-size:.8rem;color:#888;display:none}
+.region-info span{color:#c0c0e0;font-family:monospace}
+.vol-row{display:flex;align-items:center;gap:.75rem;margin-bottom:1rem}
+.vol-row label{font-size:.8rem;color:#888;width:70px}
+input[type=range]{flex:1;accent-color:#6c6cff;height:4px}
+.vol-val{font-size:.8rem;color:#c0c0e0;width:40px;text-align:right;font-family:monospace}
+.format-row{display:flex;gap:.5rem;margin-bottom:1rem}
+.format-btn{padding:.4rem .9rem;border-radius:6px;border:1px solid #3a3a5c;background:transparent;color:#888;font-size:.8rem;cursor:pointer;transition:all .15s}
+.format-btn.active{border-color:#6c6cff;background:rgba(108,108,255,.15);color:#a0a0ff}
+.section-label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:#555;margin-bottom:.6rem}
+.filename{font-size:.85rem;color:#888;margin-top:.5rem;text-align:center;word-break:break-all}
+</style>
+</head>
+<body>
+<h1>🎵 MP4 → MP3 Studio</h1>
+<p class="sub">ブラウザ完結 · アップロード不要 · 安全</p>
+
+<div class="card">
+  <div class="drop-zone" id="dropZone">
+    <input type="file" id="fileInput" accept="video/*,audio/*">
+    <span class="drop-icon">🎬</span>
+    <div class="drop-title">動画ファイルをドラッグ＆ドロップ</div>
+    <div class="drop-hint">または クリックして選択 · MP4, MOV, AVI, MKV 対応</div>
+  </div>
+  <div class="progress-wrap" id="progressWrap">
+    <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+    <div class="status" id="statusText">処理中…</div>
+  </div>
+  <div class="filename" id="fileName"></div>
+</div>
+
+<div class="card" id="waveform-card">
+  <div class="section-label">波形エディター</div>
+  <div class="waveform-wrap">
+    <div id="waveform"></div>
+  </div>
+
+  <div class="timeline-row">
+    <div class="time-badge" id="curTime">0:00.0</div>
+    <div style="flex:1;height:2px;background:#2a2a38;border-radius:1px;position:relative">
+      <div id="playhead" style="position:absolute;left:0%;width:2px;height:100%;background:#6c6cff;transition:left .1s"></div>
+    </div>
+    <div class="time-badge" id="durTime">0:00</div>
+  </div>
+
+  <div class="region-info" id="regionInfo">
+    トリム範囲: <span id="trimStart">0.00</span>s → <span id="trimEnd">0.00</span>s
+    （<span id="trimDur">0.00</span>s）
+  </div>
+
+  <div class="controls" style="margin-bottom:1rem">
+    <button class="btn primary" id="playBtn" onclick="togglePlay()">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+      再生
+    </button>
+    <button class="btn" onclick="ws.stop()">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h12v12H6z"/></svg>
+      停止
+    </button>
+    <button class="btn" id="zoomIn" onclick="zoom(1)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35M11 8v6M8 11h6"/></svg>
+      拡大
+    </button>
+    <button class="btn" id="zoomOut" onclick="zoom(-1)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35M8 11h6"/></svg>
+      縮小
+    </button>
+    <button class="btn danger" onclick="clearRegion()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+      範囲解除
+    </button>
+  </div>
+
+  <div class="vol-row">
+    <label class="section-label" style="margin:0">音量</label>
+    <input type="range" id="volSlider" min="0" max="200" value="100" oninput="setVol(this.value)">
+    <span class="vol-val" id="volVal">100%</span>
+  </div>
+
+  <div class="section-label">出力フォーマット</div>
+  <div class="format-row" id="formatRow">
+    <button class="format-btn active" data-fmt="mp3" onclick="setFmt(this)">MP3</button>
+    <button class="format-btn" data-fmt="wav" onclick="setFmt(this)">WAV</button>
+    <button class="format-btn" data-fmt="ogg" onclick="setFmt(this)">OGG</button>
+  </div>
+
+  <div class="controls">
+    <button class="btn primary" onclick="exportAudio()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+      ダウンロード
+    </button>
+    <button class="btn" onclick="resetAll()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+      リセット
+    </button>
+  </div>
+</div>
+
+<script>
+// FFmpeg 0.12 系は内部で Web Worker を生成する。CDN から直接 Worker を
+// 構築するとクロスオリジン（file:// では origin 'null'）で失敗するため、
+// Worker・コア・wasm をすべて Blob URL 化して同一オリジン扱いにする。
+const FF_BASE = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.15/dist/umd';
+const CORE_BASE = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+let ffmpeg = null, ws = null, audioBlob = null, origName = 'audio';
+let trimStart = null, trimEnd = null, zoomLevel = 50, vol = 100, fmt = 'mp3';
+let isDragging = false, dragStartX = 0, dragStartTime = 0, wsDuration = 0;
+let isDrawingRegion = false, regionStartSec = 0;
+
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+const progressWrap = document.getElementById('progressWrap');
+const progressFill = document.getElementById('progressFill');
+const statusText = document.getElementById('statusText');
+const waveformCard = document.getElementById('waveform-card');
+const regionInfo = document.getElementById('regionInfo');
+
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag'));
+dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('drag'); const f = e.dataTransfer.files[0]; if(f) processFile(f); });
+fileInput.addEventListener('change', e => { if(e.target.files[0]) processFile(e.target.files[0]); });
+
+async function processFile(file) {
+  origName = file.name.replace(/\.[^.]+$/, '');
+  document.getElementById('fileName').textContent = '📁 ' + file.name;
+  progressWrap.style.display = 'block';
+  setProgress(0, 'FFmpegを初期化中…');
+
+  try {
+    if (!ffmpeg) {
+      const {FFmpeg: FF} = window.FFmpegWASM || {};
+      const {toBlobURL} = window.FFmpegUtil || {};
+      if (!FF || !toBlobURL) {
+        throw new Error('FFmpegライブラリの読み込みに失敗しました。ネットワーク接続を確認してください。');
+      }
+      ffmpeg = new FF();
+      ffmpeg.on('progress', ({progress}) => setProgress(Math.round(progress * 80), '音声を変換中…'));
+      setProgress(3, 'FFmpegコンポーネントを取得中…');
+      // CDN から取得したスクリプト／wasm を Blob URL 化してから読み込む。
+      // これにより file:// や別オリジンでも Worker を構築できる。
+      const [classWorkerURL, coreURL, wasmURL] = await Promise.all([
+        toBlobURL(`${FF_BASE}/814.ffmpeg.js`, 'text/javascript'),
+        toBlobURL(`${CORE_BASE}/ffmpeg-core.js`, 'text/javascript'),
+        toBlobURL(`${CORE_BASE}/ffmpeg-core.wasm`, 'application/wasm'),
+      ]);
+      setProgress(6, 'FFmpegを初期化中…');
+      await ffmpeg.load({classWorkerURL, coreURL, wasmURL});
+    }
+    setProgress(10, '動画を読み込み中…');
+    const ab = await file.arrayBuffer();
+    const uint8 = new Uint8Array(ab);
+    const ext = file.name.split('.').pop().toLowerCase();
+    await ffmpeg.writeFile('input.' + ext, uint8);
+    setProgress(20, '音声を抽出中…');
+    await ffmpeg.exec(['-i','input.'+ext,'-vn','-acodec','libmp3lame','-q:a','2','output.mp3']);
+    setProgress(90, '波形を生成中…');
+    const data = await ffmpeg.readFile('output.mp3');
+    audioBlob = new Blob([data.buffer], {type:'audio/mp3'});
+    setProgress(100, '完了！');
+    setTimeout(() => initWaveform(audioBlob), 300);
+  } catch(err) {
+    console.error(err);
+    statusText.textContent = 'エラー: ' + err.message;
+    statusText.style.color = '#ff4466';
+  }
+}
+
+function setProgress(pct, msg) {
+  progressFill.style.width = pct + '%';
+  statusText.textContent = msg;
+}
+
+function initWaveform(blob) {
+  waveformCard.style.display = 'block';
+  waveformCard.scrollIntoView({behavior:'smooth'});
+  const url = URL.createObjectURL(blob);
+
+  if (ws) { ws.destroy(); }
+  ws = WaveSurfer.create({
+    container: '#waveform',
+    waveColor: '#4a4a8a',
+    progressColor: '#6c6cff',
+    cursorColor: '#ff6c9d',
+    barWidth: 2,
+    barGap: 1,
+    barRadius: 2,
+    height: 120,
+    normalize: true,
+    backend: 'WebAudio',
+  });
+  ws.load(url);
+  ws.on('ready', () => {
+    wsDuration = ws.getDuration();
+    document.getElementById('durTime').textContent = fmtTime(wsDuration);
+    setupRegionDraw();
+  });
+  ws.on('audioprocess', () => {
+    const cur = ws.getCurrentTime();
+    document.getElementById('curTime').textContent = fmtTime(cur);
+    const pct = wsDuration ? (cur / wsDuration * 100) : 0;
+    document.getElementById('playhead').style.left = pct + '%';
+  });
+  ws.on('play', () => { document.getElementById('playBtn').innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg> 一時停止'; });
+  ws.on('pause', () => { document.getElementById('playBtn').innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><path d="M8 5v14l11-7z"/></svg> 再生'; });
+}
+
+function setupRegionDraw() {
+  const waveEl = document.getElementById('waveform');
+  let startX = 0, startSec = 0;
+  let overlay = null;
+
+  waveEl.addEventListener('mousedown', e => {
+    isDrawingRegion = true;
+    startX = e.offsetX;
+    startSec = (startX / waveEl.offsetWidth) * wsDuration;
+    if (overlay) overlay.remove();
+    overlay = document.createElement('div');
+    overlay.style.cssText = 'position:absolute;top:0;height:100%;background:rgba(108,108,255,.25);border:1px solid #6c6cff;pointer-events:none;';
+    overlay.style.left = startX + 'px';
+    overlay.style.width = '0px';
+    waveEl.style.position = 'relative';
+    waveEl.appendChild(overlay);
+  });
+
+  waveEl.addEventListener('mousemove', e => {
+    if (!isDrawingRegion) return;
+    const cur = e.offsetX;
+    const minX = Math.min(startX, cur);
+    const maxX = Math.max(startX, cur);
+    overlay.style.left = minX + 'px';
+    overlay.style.width = (maxX - minX) + 'px';
+    trimStart = (minX / waveEl.offsetWidth) * wsDuration;
+    trimEnd = (maxX / waveEl.offsetWidth) * wsDuration;
+    updateRegionInfo();
+  });
+
+  waveEl.addEventListener('mouseup', () => {
+    isDrawingRegion = false;
+    if (trimEnd !== null && trimEnd - trimStart < 0.1) { clearRegion(); }
+  });
+
+  waveEl.addEventListener('touchstart', e => {
+    const t = e.touches[0];
+    const rect = waveEl.getBoundingClientRect();
+    startX = t.clientX - rect.left;
+    startSec = (startX / waveEl.offsetWidth) * wsDuration;
+    isDrawingRegion = true;
+    if (overlay) overlay.remove();
+    overlay = document.createElement('div');
+    overlay.style.cssText = 'position:absolute;top:0;height:100%;background:rgba(108,108,255,.25);border:1px solid #6c6cff;pointer-events:none;';
+    overlay.style.left = startX + 'px';
+    overlay.style.width = '0px';
+    waveEl.style.position = 'relative';
+    waveEl.appendChild(overlay);
+    e.preventDefault();
+  }, {passive:false});
+
+  waveEl.addEventListener('touchmove', e => {
+    if (!isDrawingRegion) return;
+    const t = e.touches[0];
+    const rect = waveEl.getBoundingClientRect();
+    const cur = t.clientX - rect.left;
+    const minX = Math.min(startX, cur);
+    const maxX = Math.max(startX, cur);
+    overlay.style.left = minX + 'px';
+    overlay.style.width = (maxX - minX) + 'px';
+    trimStart = (minX / waveEl.offsetWidth) * wsDuration;
+    trimEnd = (maxX / waveEl.offsetWidth) * wsDuration;
+    updateRegionInfo();
+    e.preventDefault();
+  }, {passive:false});
+
+  waveEl.addEventListener('touchend', () => {
+    isDrawingRegion = false;
+  });
+}
+
+function updateRegionInfo() {
+  if (trimStart !== null && trimEnd !== null && trimEnd > trimStart) {
+    regionInfo.style.display = 'block';
+    document.getElementById('trimStart').textContent = trimStart.toFixed(2);
+    document.getElementById('trimEnd').textContent = trimEnd.toFixed(2);
+    document.getElementById('trimDur').textContent = (trimEnd - trimStart).toFixed(2);
+  }
+}
+
+function clearRegion() {
+  trimStart = null; trimEnd = null;
+  regionInfo.style.display = 'none';
+  const w = document.getElementById('waveform');
+  const overlays = w.querySelectorAll('div[style*="rgba(108,108,255"]');
+  overlays.forEach(o => o.remove());
+}
+
+function togglePlay() { ws && ws.playPause(); }
+function zoom(dir) {
+  zoomLevel = Math.max(10, Math.min(500, zoomLevel + dir * 30));
+  ws && ws.zoom(zoomLevel);
+}
+function setVol(v) {
+  vol = parseInt(v);
+  document.getElementById('volVal').textContent = vol + '%';
+  ws && ws.setVolume(vol / 100);
+}
+function setFmt(btn) {
+  document.querySelectorAll('.format-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  fmt = btn.dataset.fmt;
+}
+
+async function exportAudio() {
+  if (!ffmpeg || !audioBlob) return;
+  const btn = document.querySelector('[onclick="exportAudio()"]');
+  btn.textContent = '変換中…';
+  btn.disabled = true;
+  try {
+    const src = new Uint8Array(await audioBlob.arrayBuffer());
+    await ffmpeg.writeFile('edit_in.mp3', src);
+    const args = ['-i','edit_in.mp3'];
+    if (trimStart !== null && trimEnd !== null) {
+      args.push('-ss', trimStart.toFixed(3), '-to', trimEnd.toFixed(3));
+    }
+    if (vol !== 100) {
+      args.push('-filter:a', `volume=${(vol/100).toFixed(2)}`);
+    }
+    const outFile = 'out.' + fmt;
+    if (fmt === 'mp3') args.push('-acodec','libmp3lame','-q:a','2');
+    else if (fmt === 'wav') args.push('-acodec','pcm_s16le');
+    else args.push('-acodec','libvorbis','-q:a','5');
+    args.push(outFile);
+    await ffmpeg.exec(args);
+    const out = await ffmpeg.readFile(outFile);
+    const mimes = {mp3:'audio/mpeg',wav:'audio/wav',ogg:'audio/ogg'};
+    const dl = new Blob([out.buffer], {type: mimes[fmt]});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(dl);
+    a.download = origName + '.' + fmt;
+    a.click();
+  } catch(e) {
+    alert('エクスポートエラー: ' + e.message);
+  }
+  btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg> ダウンロード';
+  btn.disabled = false;
+}
+
+function resetAll() {
+  if (ws) { ws.destroy(); ws = null; }
+  waveformCard.style.display = 'none';
+  progressWrap.style.display = 'none';
+  document.getElementById('fileName').textContent = '';
+  fileInput.value = '';
+  trimStart = null; trimEnd = null; vol = 100; zoomLevel = 50; fmt = 'mp3';
+  document.getElementById('volSlider').value = 100;
+  document.getElementById('volVal').textContent = '100%';
+  document.querySelectorAll('.format-btn').forEach((b,i) => b.classList.toggle('active', i===0));
+  audioBlob = null;
+}
+
+function fmtTime(s) {
+  const m = Math.floor(s / 60);
+  const sec = (s % 60).toFixed(1);
+  return m + ':' + (sec < 10 ? '0' : '') + sec;
+}
+</script>
+</body>
+</html>
